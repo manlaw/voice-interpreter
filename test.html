@@ -143,10 +143,15 @@
   <input id="sModel" placeholder="openai/gpt-oss-120b">
   <label for="sKey">API key</label>
   <input id="sKey" type="password" placeholder="gsk_...">
+  <label>Microphone</label>
+  <div class="row" style="margin-top:4px">
+    <button id="sMicMode" onclick="toggleMicMode()"></button>
+  </div>
   <div class="row">
     <button class="save" onclick="saveSettings()">Save</button>
     <button onclick="toggleSettings()">Hide</button>
   </div>
+  <p>Hands-free: tap Start once, then just talk — each pause sends automatically. Say "stop" or 停 to end. Hands-free needs your Groq key.</p>
   <p>Settings are stored separately from the main app (keys prefixed <b>lab_</b>), so nothing here can affect your real interpreter. With a Groq key the mic is silent (Whisper transcription). Without a key it falls back to the phone's speech recognizer.</p>
 </div>
 
@@ -157,7 +162,8 @@
 /* ---------- state (isolated from main app via lab_ prefix) ---------- */
 var LS = {
   endpoint:"lab_endpoint", model:"lab_model", key:"lab_key",
-  mode:"lab_mode", level:"lab_hsk_level", section:"lab_hsk_section", verb:"lab_hsk_verb"
+  mode:"lab_mode", level:"lab_hsk_level", section:"lab_hsk_section", verb:"lab_hsk_verb",
+  micmode:"lab_micmode"
 };
 function get(k,d){ var v=localStorage.getItem(k); return v===null?d:v; }
 function set(k,v){ localStorage.setItem(k,String(v)); }
@@ -173,8 +179,11 @@ var lesson = {
   section: parseInt(get(LS.section,"1"),10),
   verb:    parseInt(get(LS.verb,"5"),10)
 };
+var micMode = get(LS.micmode,"auto");   // "auto" = hands-free, "tap" = push to talk
 var history = [];        // chat messages for the API, per session
 var recorder=null, chunks=[], recording=false, busy=false;
+var autoStream=null, audioCtx=null, analyser=null, monitor=null;
+var listening=false, utterOn=false, silence=0, utterMs=0;
 var synth = window.speechSynthesis;
 
 /* ---------- system prompts ---------- */
@@ -259,13 +268,105 @@ function saveSettings(){
 }
 function status(t){ $("status").textContent=t||""; }
 
-/* ---------- mic: tap to start, tap to stop (silent, no beeps) ---------- */
-function micTap(){
-  if(busy) return;
-  if(recording){ stopRec(); return; }
-  if(cfg.key && cfg.endpoint.indexOf("groq")>-1){ startRec(); }
-  else { fallbackSR(); }
+/* ---------- mic: hands-free (default) or tap to talk ---------- */
+function hasWhisper(){ return cfg.key && cfg.endpoint.indexOf("groq")>-1; }
+function updateMicLabel(){
+  var b=$("mic");
+  if(micMode==="auto"){
+    b.textContent = listening ? "⏹ Stop voice" : "🎤 Start voice";
+    b.classList.toggle("rec", listening);
+  } else {
+    b.textContent = recording ? "⏹ Tap when done" : "🎤 Tap to speak";
+    b.classList.toggle("rec", recording);
+  }
 }
+function toggleMicMode(){
+  micMode = micMode==="auto" ? "tap" : "auto";
+  set(LS.micmode,micMode);
+  renderMicMode();
+  if(listening) stopAuto();
+  updateMicLabel();
+}
+function renderMicMode(){
+  var b=$("sMicMode");
+  if(b) b.textContent = micMode==="auto" ? "Hands-free (tap to switch)" : "Tap to talk (tap to switch)";
+}
+function micTap(){
+  if(micMode==="auto"){
+    if(listening){ stopAuto(); return; }
+    if(!hasWhisper()){ sys("Hands-free needs your Groq key — add it above, or switch to Tap to talk.",true); toggleSettings(); return; }
+    startAuto();
+  } else {
+    if(busy) return;
+    if(recording){ stopRec(); return; }
+    if(hasWhisper()){ startRec(); } else { fallbackSR(); }
+  }
+}
+
+/* --- hands-free engine: continuous mic, send on pause --- */
+function startAuto(){
+  navigator.mediaDevices.getUserMedia({audio:true}).then(function(stream){
+    autoStream=stream;
+    audioCtx=new (window.AudioContext||window.webkitAudioContext)();
+    analyser=audioCtx.createAnalyser();
+    analyser.fftSize=1024;
+    audioCtx.createMediaStreamSource(stream).connect(analyser);
+    listening=true; utterOn=false; silence=0; utterMs=0;
+    updateMicLabel();
+    status('Hands-free — speak, pause to send. Say "stop" / 停 to end.');
+    monitor=setInterval(tick,100);
+  }).catch(function(){ sys("Microphone blocked — allow mic access for this page.",true); });
+}
+function stopAuto(){
+  listening=false;
+  if(monitor){ clearInterval(monitor); monitor=null; }
+  if(recorder && recorder.state!=="inactive"){ recorder.onstop=null; recorder.stop(); }
+  utterOn=false;
+  if(autoStream){ autoStream.getTracks().forEach(function(t){t.stop();}); autoStream=null; }
+  if(audioCtx){ audioCtx.close(); audioCtx=null; }
+  updateMicLabel(); status("Voice stopped.");
+}
+function loudness(){
+  var d=new Uint8Array(analyser.fftSize);
+  analyser.getByteTimeDomainData(d);
+  var sum=0;
+  for(var i=0;i<d.length;i++){ var v=d[i]-128; sum+=v*v; }
+  return Math.sqrt(sum/d.length);          // ~0-3 silence, speech usually >6
+}
+function tick(){
+  if(!listening) return;
+  if(busy || synth.speaking){ if(utterOn) dropUtterance(); return; }  // don't hear itself
+  var loud = loudness()>6;
+  if(!utterOn){
+    if(loud) beginUtterance();
+  } else {
+    utterMs+=100;
+    silence = loud ? 0 : silence+100;
+    if(silence>=1300 && utterMs>600) endUtterance();   // ~1.3s pause = send
+    else if(utterMs>30000) endUtterance();             // safety cap
+  }
+}
+function beginUtterance(){
+  chunks=[]; utterOn=true; silence=0; utterMs=0;
+  recorder=new MediaRecorder(autoStream);
+  recorder.ondataavailable=function(e){ if(e.data.size) chunks.push(e.data); };
+  recorder.onstop=function(){
+    transcribe(new Blob(chunks,{type:recorder.mimeType||"audio/webm"}));
+  };
+  recorder.start();
+  status("Listening…");
+}
+function endUtterance(){
+  utterOn=false;
+  status("Transcribing…");
+  if(recorder && recorder.state!=="inactive") recorder.stop();
+}
+function dropUtterance(){
+  utterOn=false;
+  if(recorder && recorder.state!=="inactive"){ recorder.onstop=null; recorder.stop(); }
+}
+
+/* --- tap-to-talk engine --- */
 function startRec(){
   navigator.mediaDevices.getUserMedia({audio:true}).then(function(stream){
     chunks=[];
@@ -276,16 +377,12 @@ function startRec(){
       transcribe(new Blob(chunks,{type:recorder.mimeType||"audio/webm"}));
     };
     recorder.start();
-    recording=true;
-    $("mic").classList.add("rec");
-    $("mic").textContent="⏹ Tap when done";
+    recording=true; updateMicLabel();
     status("Listening…");
   }).catch(function(){ sys("Microphone blocked — allow mic access for this page.",true); });
 }
 function stopRec(){
-  recording=false;
-  $("mic").classList.remove("rec");
-  $("mic").textContent="🎤 Tap to speak";
+  recording=false; updateMicLabel();
   status("Transcribing…");
   if(recorder && recorder.state!=="inactive") recorder.stop();
 }
@@ -301,7 +398,8 @@ function transcribe(blob){
   }).then(function(r){ if(!r.ok) throw new Error("transcription "+r.status); return r.json(); })
   .then(function(j){
     var text=(j.text||"").trim();
-    if(!text){ status(""); sys("Didn't catch that — try again."); return; }
+    if(!text){ status(listening?'Hands-free — speak anytime.':""); return; }
+    if(listening && /^(stop|停|停止)[\s.。!！]*$/i.test(text)){ stopAuto(); return; }
     send(text);
   }).catch(function(e){ status(""); sys("Transcription failed: "+e.message,true); });
 }
@@ -377,7 +475,10 @@ function speak(zh,en){
 /* ---------- boot ---------- */
 window.setMode=setMode; window.nextVerb=nextVerb; window.micTap=micTap;
 window.toggleSettings=toggleSettings; window.saveSettings=saveSettings; window.clearChat=clearChat;
+window.toggleMicMode=toggleMicMode;
 renderLessonBar();
+renderMicMode();
+updateMicLabel();
 setMode(mode);
 if(!cfg.key) sys("Tip: open Settings and add your Groq key for the silent mic and AI/Lesson modes.");
 })();
