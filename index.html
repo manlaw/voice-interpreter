@@ -62,6 +62,10 @@
     background:transparent;border:1px solid var(--line);color:var(--text);
     border-radius:8px;padding:5px 10px;font-size:13px;font-family:inherit;
   }
+  #lessonBar select{
+    background:transparent;border:none;color:var(--seal);font-weight:700;
+    font-size:14px;font-family:inherit;padding:2px 0;
+  }
 
   /* chat: one transcript per mode; only the active mode's is shown */
   .chat{flex:1;overflow-y:auto;padding:6px 12px 12px;display:none;flex-direction:column;gap:10px}
@@ -127,7 +131,7 @@
 </div>
 
 <div id="lessonBar">
-  <span class="pos">HSK <b id="pLevel">4</b> · <b id="pSection">1</b>·<b id="pVerb">5</b> <b id="pVerbName"></b></span>
+  <span class="pos">HSK <select id="selLevel" onchange="setPos()"></select>·<select id="selSection" onchange="setPos()"></select>·<select id="selVerb" onchange="setPos()"></select> <b id="pVerbName"></b></span>
   <span class="grow"></span>
   <button onclick="showLog()">📜</button>
   <button onclick="nextVerb()">Verb done ✓</button>
@@ -242,6 +246,7 @@ function sysLesson(){
   return sysAi() + "\n\n" + [
 "You are also this user's ongoing Chinese teacher, working through a fixed curriculum: HSK levels 1-9, 10 sections per level, 10 verbs per section.",
 posLine,
+"KEEP IT SIMPLE: example sentences must be short with simple structure, and use ONLY vocabulary at or below HSK "+lesson.level+" (apart from the target verb itself). Never reach for words above the learner's current level - if a simpler word exists, use it.",
 "Stay on the current verb until the user says they're done or asks to move on. Converse naturally like in a normal exchange - just anchored to the curriculum position above."
   ].join("\n");
 }
@@ -263,11 +268,24 @@ function setMode(m){
   }
   renderLessonBar();
 }
+function fillSelect(id,n){
+  var s=$(id); s.innerHTML="";
+  for(var i=1;i<=n;i++){ var o=document.createElement("option"); o.value=i; o.textContent=i; s.appendChild(o); }
+}
 function renderLessonBar(){
-  $("pLevel").textContent=lesson.level;
-  $("pSection").textContent=lesson.section;
-  $("pVerb").textContent=lesson.verb;
+  $("selLevel").value=lesson.level;
+  $("selSection").value=lesson.section;
+  $("selVerb").value=lesson.verb;
   $("pVerbName").textContent=currentVerbName();
+}
+function setPos(){
+  lesson.level=parseInt($("selLevel").value,10);
+  lesson.section=parseInt($("selSection").value,10);
+  lesson.verb=parseInt($("selVerb").value,10);
+  set(LS.level,lesson.level); set(LS.section,lesson.section); set(LS.verb,lesson.verb);
+  renderLessonBar();
+  histories.lesson=[];
+  sys("Jumped to HSK "+lesson.level+", section "+lesson.section+", verb "+lesson.verb+(currentVerbName()?" 「"+currentVerbName()+"」":"")+". Tap the mic to start.");
 }
 function verbLog(){ try{ return JSON.parse(get("lab_verblog","[]")); }catch(e){ return []; } }
 function nextVerb(){
@@ -546,9 +564,10 @@ function speak(zh,en){
 }
 
 /* ---------- boot ---------- */
-window.setMode=setMode; window.nextVerb=nextVerb; window.micTap=micTap; window.showLog=showLog;
+window.setMode=setMode; window.nextVerb=nextVerb; window.micTap=micTap; window.showLog=showLog; window.setPos=setPos;
 window.toggleSettings=toggleSettings; window.saveSettings=saveSettings; window.clearChat=clearChat;
 window.toggleMicMode=toggleMicMode; window.toggleMute=toggleMute; window.sendTyped=sendTyped;
+fillSelect("selLevel",9); fillSelect("selSection",10); fillSelect("selVerb",10);
 renderLessonBar();
 renderMicMode();
 renderMute();
