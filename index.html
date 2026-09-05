@@ -94,6 +94,7 @@
   #panel p { font-size: 12px; color: var(--muted); line-height: 1.4; margin: 0 0 8px; }
   .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
 </style>
+<script src="https://cdn.jsdelivr.net/npm/pinyin-pro@3.19.7/dist/index.js"></script>
 </head>
 <body>
   <header>
@@ -107,13 +108,12 @@
       <button class="ghost" id="settings" type="button">API Key</button>
     </div>
   </header>
-
   <main>
     <button id="mic" type="button">Start Voice</button>
     <button class="ghost" id="settings2" type="button" style="font-size:15px;padding:10px 16px">Set API Key</button>
     <div id="panel">
       <h2>API key</h2>
-      <p>Your Grok chat login is not this key. You need a developer key from OpenAI or another chat API. Paste it below.</p>
+      <p>Leave this blank to use free translation. A key is only for Answer mode.</p>
       <label for="endpoint">Endpoint</label>
       <input id="endpoint" placeholder="https://api.openai.com/v1/chat/completions">
       <label for="model">Model</label>
@@ -125,12 +125,10 @@
         <button class="ghost" id="saveKey" type="button">Save</button>
       </div>
     </div>
-    <div id="status">Tap Set API Key, paste a developer key, Save, then Start Voice.</div>
+    <div id="status">Tap Start Voice. No API key needed for translate.</div>
     <div id="log"><div class="hint">Said and translated lines will show here.</div></div>
   </main>
-
   <footer>English ↔ Chinese · best in Chrome. Say stop or 停 to end.</footer>
-
 <script>
 (function () {
   var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -145,30 +143,15 @@
   var mode = "ANSWER";
   var voices = [];
   var restartT = null;
-
-  var SYSTEM =
-    "You are a bilingual voice interpreter for English and Chinese. " +
-    "MODE DETECTION: If the user says 翻译 or translate, enter TRANSLATE mode. " +
-    "If the user says 回答 or answer, enter ANSWER mode. " +
-    "If neither is present, default to ANSWER mode. " +
-    "TRANSLATE MODE: Convert the user's speech into the other language only. No commentary, no added meaning. Output: Chinese, then pinyin, then English. " +
-    "ANSWER MODE: Understand the user's message and respond thoughtfully. Output: Chinese, then pinyin, then English. " +
-    "GENERAL: Auto-detect the input language; respond in the other language. Keep responses short — this is voice. " +
-    "If the user says stop or 停, end the session. " +
-    "Always reply in exactly three lines:\nZH: <simplified Chinese>\nPY: <Hanyu Pinyin with tone marks, syllable spaced>\nEN: <English>";
-
   function loadVoices() { voices = synth.getVoices() || []; }
   loadVoices();
   if (typeof synth.onvoiceschanged !== "undefined") synth.onvoiceschanged = loadVoices;
-
   function pickVoice(lang) {
     if (!voices.length) loadVoices();
     var prefix = lang === "zh" ? "zh" : "en";
     return voices.find(function (v) { return v.lang && v.lang.toLowerCase().indexOf(prefix) === 0; }) || null;
   }
-
   function setStatus(t) { statusEl.textContent = t; }
-
   function addBubble(who, zh, py, en) {
     var hint = logEl.querySelector(".hint");
     if (hint) hint.remove();
@@ -184,7 +167,6 @@
     logEl.appendChild(d);
     logEl.scrollTop = logEl.scrollHeight;
   }
-
   function cfg() {
     return {
       endpoint: localStorage.getItem("vi_endpoint") || "https://api.openai.com/v1/chat/completions",
@@ -192,51 +174,43 @@
       key: localStorage.getItem("vi_key") || ""
     };
   }
-
-  function parseReply(text) {
-    var zh = "", py = "", en = "";
-    String(text || "").split(/\r?\n/).forEach(function (line) {
-      line = line.trim();
-      if (/^ZH:/i.test(line)) zh = line.replace(/^ZH:\s*/i, "");
-      else if (/^PY:/i.test(line)) py = line.replace(/^PY:\s*/i, "");
-      else if (/^EN:/i.test(line)) en = line.replace(/^EN:\s*/i, "");
-    });
-    if (!zh && !en) zh = String(text || "").trim();
-    return { zh: zh, py: py, en: en };
+  function isZh(s) { return /[\u4e00-\u9fff]/.test(s || ""); }
+  function toPinyin(s) {
+    try {
+      if (window.pinyinPro && window.pinyinPro.pinyin) {
+        return window.pinyinPro.pinyin(s, { toneType: "mark", type: "array" }).join(" ");
+      }
+    } catch (e) {}
+    return "";
   }
-
+  function freeTranslate(text) {
+    var fromZh = isZh(text);
+    var pair = fromZh ? "zh-CN|en" : "en|zh-CN";
+    var url = "https://api.mymemory.translated.net/get?q=" + encodeURIComponent(text) + "&langpair=" + pair;
+    return fetch(url).then(function (r) { return r.json(); }).then(function (data) {
+      var out = (data.responseData && data.responseData.translatedText) || text;
+      if (fromZh) return { zh: text, py: toPinyin(text), en: out };
+      return { zh: out, py: toPinyin(out), en: text };
+    });
+  }
   function callLLM(userText) {
     var c = cfg();
-    if (!c.key) {
-      return Promise.resolve({
-        zh: "请先点右上角 Key，填入接口密钥。",
-        py: "qǐng xiān diǎn yòu shàng jiǎo Key, tián rù jiē kǒu mì yào.",
-        en: "Tap Key in the top right and save an API key first."
-      });
-    }
+    if (!c.key) return freeTranslate(userText);
     return fetch(c.endpoint, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": "Bearer " + c.key
-      },
+      headers: { "Content-Type": "application/json", "Authorization": "Bearer " + c.key },
       body: JSON.stringify({
-        model: c.model,
-        temperature: 0.3,
-        messages: [
-          { role: "system", content: SYSTEM },
-          { role: "user", content: "Current mode hint: " + mode + "\nUser said: " + userText }
-        ]
+        model: c.model, temperature: 0.3,
+        messages: [{ role: "system", content: "Translate or answer briefly in ZH then pinyin then EN." }, { role: "user", content: userText }]
       })
     }).then(function (r) {
       if (!r.ok) throw new Error("LLM " + r.status);
       return r.json();
     }).then(function (data) {
       var content = (((data.choices || [])[0] || {}).message || {}).content || "";
-      return parseReply(content);
+      return { zh: content, py: "", en: content };
     });
   }
-
   function speak(text, lang) {
     return new Promise(function (resolve) {
       if (!text || !synth) { resolve(); return; }
@@ -250,7 +224,6 @@
       synth.speak(u);
     });
   }
-
   function speakReply(reply) {
     var lock = lockEl.value;
     var chain = Promise.resolve();
@@ -258,18 +231,15 @@
     if (lock === "en" || lock === "auto") chain = chain.then(function () { return speak(reply.en, "en"); });
     return chain;
   }
-
   function handleText(raw) {
     var text = (raw || "").trim();
     if (!text) return;
-    addBubble("you", /[\u4e00-\u9fff]/.test(text) ? text : "", "", /[\u4e00-\u9fff]/.test(text) ? "" : text);
+    addBubble("you", isZh(text) ? text : "", "", isZh(text) ? "" : text);
     if (/\bstop\b/i.test(text) || /停/.test(text)) {
       addBubble("bot", "会话结束。", "huì huà jié shù.", "Session ended.");
       stopSession();
       return;
     }
-    if (/翻译/.test(text) || /\btranslate\b/i.test(text)) mode = "TRANSLATE";
-    if (/回答/.test(text) || /\banswer\b/i.test(text)) mode = "ANSWER";
     setStatus("Thinking…");
     if (rec) { try { rec.stop(); } catch (e) {} }
     callLLM(text).then(function (reply) {
@@ -283,12 +253,8 @@
       if (live) startRec();
     });
   }
-
   function startRec() {
-    if (!SR) {
-      setStatus("This browser has no speech recognition. Use Chrome on Android.");
-      return;
-    }
+    if (!SR) { setStatus("Use Chrome on Android for the mic."); return; }
     rec = new SR();
     rec.lang = "zh-CN";
     rec.continuous = true;
@@ -308,7 +274,6 @@
     };
     try { rec.start(); } catch (e) { setStatus("Mic start failed."); }
   }
-
   function startSession() {
     live = true;
     mic.classList.add("live");
@@ -316,7 +281,6 @@
     setStatus("Listening…");
     startRec();
   }
-
   function stopSession() {
     live = false;
     mic.classList.remove("live");
@@ -325,16 +289,13 @@
     if (rec) try { rec.stop(); } catch (e) {}
     if (synth) synth.cancel();
   }
-
   mic.addEventListener("click", function () { live ? stopSession() : startSession(); });
-
   function openKey() {
     var c = cfg();
     document.getElementById("endpoint").value = c.endpoint;
     document.getElementById("model").value = c.model;
     document.getElementById("apikey").value = c.key;
     panel.classList.add("open");
-    setStatus("Paste a developer API key, then Save.");
   }
   document.getElementById("settings").onclick = openKey;
   document.getElementById("settings2").onclick = openKey;
@@ -344,9 +305,8 @@
     localStorage.setItem("vi_model", document.getElementById("model").value.trim());
     localStorage.setItem("vi_key", document.getElementById("apikey").value.trim());
     panel.classList.remove("open");
-    setStatus(document.getElementById("apikey").value.trim() ? "Key saved. Tap Start Voice." : "No key typed.");
+    setStatus("Saved. Tap Start Voice.");
   };
-
   document.addEventListener("touchstart", function unlock() {
     if (synth) {
       var u = new SpeechSynthesisUtterance(" ");
@@ -355,7 +315,6 @@
     }
     document.removeEventListener("touchstart", unlock);
   }, { once: true });
-
   if (!SR) setStatus("Speech recognition needs Chrome on Android.");
 })();
 </script>
