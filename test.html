@@ -168,7 +168,7 @@
 var LS = {
   endpoint:"lab_endpoint", model:"lab_model", key:"lab_key",
   mode:"lab_mode", level:"lab_hsk_level", section:"lab_hsk_section", verb:"lab_hsk_verb",
-  micmode:"lab_micmode"
+  micmode:"lab_micmode", live:"lab_live"
 };
 function get(k,d){ var v=localStorage.getItem(k); return v===null?d:v; }
 function set(k,v){ localStorage.setItem(k,String(v)); }
@@ -324,13 +324,15 @@ function startAuto(){
     analyser.fftSize=1024;
     audioCtx.createMediaStreamSource(stream).connect(analyser);
     listening=true; utterOn=false; silence=0; utterMs=0;
+    set(LS.live,"1");
     updateMicLabel();
-    status('Hands-free — speak, pause to send. Say "stop" / 停 to end.');
+    status('Live — speak, pause to send. Say "stop" / 停 to end.');
     monitor=setInterval(tick,100);
   }).catch(function(){ sys("Microphone blocked — allow mic access for this page.",true); });
 }
 function stopAuto(){
   listening=false;
+  set(LS.live,"0");
   if(monitor){ clearInterval(monitor); monitor=null; }
   if(recorder && recorder.state!=="inactive"){ recorder.onstop=null; recorder.stop(); }
   utterOn=false;
@@ -354,7 +356,8 @@ function tick(){
   } else {
     utterMs+=100;
     silence = loud ? 0 : silence+100;
-    if(silence>=1300 && utterMs>600) endUtterance();   // ~1.3s pause = send
+    var pauseNeed = mode==="translate" ? 1000 : 1300;   // snappier in live translation
+    if(silence>=pauseNeed && utterMs>600) endUtterance();
     else if(utterMs>30000) endUtterance();             // safety cap
   }
 }
@@ -492,6 +495,9 @@ renderLessonBar();
 renderMicMode();
 updateMicLabel();
 setMode(mode);
+if(get(LS.live,"0")==="1" && micMode==="auto" && hasWhisper()){
+  startAuto();          // live was on last time — resume listening automatically
+}
 if(!cfg.key) sys("Tip: open Settings and add your Groq key for the silent mic and AI/Lesson modes.");
 })();
 </script>
