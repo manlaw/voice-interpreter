@@ -140,8 +140,8 @@
   var panel = document.getElementById("panel");
   var live = false;
   var rec = null;
-  var busy = false;
-  var recRunning = false;
+  var busy = false;          // true while thinking or speaking: incoming speech is ignored, mic keeps running
+  var recRunning = false;    // tracks whether recognition is currently active
   var voices = [];
   var restartT = null;
   function loadVoices() { voices = synth.getVoices() || []; }
@@ -194,4 +194,146 @@
       return { zh: out, py: toPinyin(out), en: text };
     });
   }
-  function callLLM(use
+  function callLLM(userText) {
+    var c = cfg();
+    if (!c.key) return freeTranslate(userText);
+    return fetch(c.endpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Authorization": "Bearer " + c.key },
+      body: JSON.stringify({
+        model: c.model, temperature: 0.3,
+        messages: [{ role: "system", content: "Translate or answer briefly in ZH then pinyin then EN." }, { role: "user", content: userText }]
+      })
+    }).then(function (r) {
+      if (!r.ok) throw new Error("LLM " + r.status);
+      return r.json();
+    }).then(function (data) {
+      var content = (((data.choices || [])[0] || {}).message || {}).content || "";
+      return { zh: content, py: "", en: content };
+    });
+  }
+  function speak(text, lang) {
+    return new Promise(function (resolve) {
+      if (!text || !synth) { resolve(); return; }
+      synth.cancel();
+      var u = new SpeechSynthesisUtterance(text);
+      u.lang = lang === "zh" ? "zh-CN" : "en-US";
+      var v = pickVoice(lang);
+      if (v) u.voice = v;
+      u.onend = resolve;
+      u.onerror = resolve;
+      synth.speak(u);
+    });
+  }
+  function speakReply(reply) {
+    var lock = lockEl.value;
+    var chain = Promise.resolve();
+    if (lock === "zh" || lock === "auto") chain = chain.then(function () { return speak(reply.zh, "zh"); });
+    if (lock === "en" || lock === "auto") chain = chain.then(function () { return speak(reply.en, "en"); });
+    return chain;
+  }
+  function handleText(raw) {
+    var text = (raw || "").trim();
+    if (!text) return;
+    if (busy || (synth && synth.speaking)) return; // ignore anything heard while thinking or speaking
+    addBubble("you", isZh(text) ? text : "", "", isZh(text) ? "" : text);
+    if (/\bstop\b/i.test(text) || /停/.test(text)) {
+      addBubble("bot", "会话结束。", "huì huà jié shù.", "Session ended.");
+      stopSession();
+      return;
+    }
+    busy = true;
+    setStatus("Thinking…");
+    callLLM(text).then(function (reply) {
+      addBubble("bot", reply.zh, reply.py, reply.en);
+      setStatus("Speaking…");
+      return speakReply(reply);
+    }).then(function () {
+      busy = false;
+      if (live) setStatus("Listening…");
+    }).catch(function (err) {
+      busy = false;
+      setStatus("Error: " + (err.message || err));
+      if (live) setTimeout(function () { if (live && !busy) setStatus("Listening…"); }, 2000);
+    });
+  }
+  function ensureRec() {
+    if (rec) return rec;
+    rec = new SR();
+    rec.lang = "zh-CN";
+    rec.continuous = true;
+    rec.interimResults = false;
+    rec.onstart = function () { recRunning = true; };
+    rec.onresult = function (e) {
+      var last = e.results[e.results.length - 1];
+      if (last.isFinal) handleText(last[0].transcript);
+    };
+    rec.onerror = function (e) {
+      if (e.error !== "no-speech" && e.error !== "aborted") setStatus("Mic: " + e.error);
+    };
+    rec.onend = function () {
+      recRunning = false;
+      if (live) {
+        clearTimeout(restartT);
+        restartT = setTimeout(function () {
+          if (live && !recRunning) startRec();
+        }, 250);
+      }
+    };
+    return rec;
+  }
+  function startRec() {
+    if (!SR) { setStatus("Use Chrome on Android for the mic."); return; }
+    ensureRec();
+    if (recRunning) return; // already listening: never restart on top of a running session
+    try { rec.start(); } catch (e) { /* already started; ignore */ }
+  }
+  function startSession() {
+    live = true;
+    busy = false;
+    mic.classList.add("live");
+    mic.textContent = "Stop";
+    setStatus("Listening…");
+    startRec();
+  }
+  function stopSession() {
+    live = false;
+    busy = false;
+    clearTimeout(restartT);
+    mic.classList.remove("live");
+    mic.textContent = "Start Voice";
+    setStatus("Stopped. Tap to start again.");
+    if (rec) try { rec.stop(); } catch (e) {}
+    if (synth) synth.cancel();
+  }
+  mic.addEventListener("click", function () { live ? stopSession() : startSession(); });
+  function openKey() {
+    var c = cfg();
+    document.getElementById("endpoint").value = c.endpoint;
+    document.getElementById("model").value = c.model;
+    document.getElementById("apikey").value = c.key;
+    panel.classList.add("open");
+  }
+  document.getElementById("settings").onclick = openKey;
+  document.getElementById("settings2").onclick = openKey;
+  document.getElementById("cancelKey").onclick = function () { panel.classList.remove("open"); };
+  document.getElementById("saveKey").onclick = function () {
+    localStorage.setItem("vi_endpoint", document.getElementById("endpoint").value.trim());
+    localStorage.setItem("vi_model", document.getElementById("model").value.trim());
+    localStorage.setItem("vi_key", document.getElementById("apikey").value.trim());
+    panel.classList.remove("open");
+    setStatus("Saved. Tap Start Voice.");
+  };
+  document.addEventListener("touchstart", function unlock() {
+    if (synth) {
+      var u = new SpeechSynthesisUtterance(" ");
+      u.volume = 0;
+      synth.speak(u);
+    }
+    document.removeEventListener("touchstart", unlock);
+  }, { once: true });
+  if (!SR) setStatus("Speech recognition needs Chrome on Android.");
+})();
+</script>
+</body>
+</html>
