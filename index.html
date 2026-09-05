@@ -32,9 +32,10 @@
   header {
     display: flex; align-items: center; justify-content: space-between;
     padding: 12px 16px; border-bottom: 1px solid var(--line); background: var(--panel);
+    gap: 8px; flex-wrap: wrap;
   }
   header h1 { margin: 0; font-size: 16px; font-weight: 650; letter-spacing: .2px; }
-  .row { display: flex; align-items: center; gap: 8px; }
+  .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
   select, input, button.ghost {
     background: var(--bg); color: var(--ink);
     border: 1px solid var(--line); border-radius: 10px;
@@ -100,6 +101,11 @@
   <header>
     <h1>Voice Interpreter</h1>
     <div class="row">
+      <select id="mode" aria-label="Mode">
+        <option value="translate">Translate</option>
+        <option value="answer">Answer</option>
+        <option value="auto">Auto</option>
+      </select>
       <select id="lock" aria-label="Output language">
         <option value="auto">Output: Auto</option>
         <option value="zh">Lock Chinese</option>
@@ -113,7 +119,7 @@
     <button class="ghost" id="settings2" type="button" style="font-size:15px;padding:10px 16px">Set API Key</button>
     <div id="panel">
       <h2>API key</h2>
-      <p>With a key: silent mic (no beeps) + smart answers. Without: free translation with the built-in mic.</p>
+      <p>With a key: silent mic (no beeps) + Answer mode. Without: free translation with the built-in mic.</p>
       <label for="endpoint">Endpoint</label>
       <input id="endpoint" placeholder="https://api.groq.com/openai/v1/chat/completions">
       <label for="model">Model</label>
@@ -128,7 +134,7 @@
     <div id="status">Tap Start Voice, then just speak and pause.</div>
     <div id="log"><div class="hint">Said and translated lines will show here.</div></div>
   </main>
-  <footer>English ↔ Chinese · best in Chrome. Say stop or 停 to end.</footer>
+  <footer>English ↔ Chinese · Translate mode converts your words; Answer mode replies to questions. Say stop or 停 to end.</footer>
 <script>
 (function () {
   var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -137,11 +143,16 @@
   var statusEl = document.getElementById("status");
   var logEl = document.getElementById("log");
   var lockEl = document.getElementById("lock");
+  var modeEl = document.getElementById("mode");
   var panel = document.getElementById("panel");
 
   var live = false;
   var busy = false;
   var voices = [];
+
+  // remember mode between visits
+  modeEl.value = localStorage.getItem("vi_mode") || "translate";
+  modeEl.onchange = function () { localStorage.setItem("vi_mode", modeEl.value); };
 
   // --- shared helpers -------------------------------------------------
   function loadVoices() { voices = synth.getVoices() || []; }
@@ -181,7 +192,6 @@
 
   function isZh(s) { return /[\u4e00-\u9fff]/.test(s || ""); }
   function onlyHanzi(s) {
-    // Strip latin letters and tone marks so TTS never tries to read pinyin.
     return (s || "").replace(/[A-Za-zÀ-ÿāáǎàēéěèīíǐìōóǒòūúǔùǖǘǚǜĀÁǍÀĒÉĚÈĪÍǏÌŌÓǑÒŪÚǓÙǕǗǙǛ]+/g, "").replace(/\s{2,}/g, " ").trim();
   }
   function toPinyin(s) {
@@ -205,16 +215,32 @@
     });
   }
 
+  function systemPrompt() {
+    var shape = ' Respond with ONLY a JSON object, no code fences, in this exact shape: {"zh":"Simplified Chinese text (hanzi only, no pinyin, no English)","en":"English text"}';
+    var m = modeEl.value;
+    if (m === "translate") {
+      return "You are a strict English-Chinese translator. Translate the input to the other language. NEVER answer questions - if the input is a question, translate the question itself. zh must be the Chinese version of the sentence and en the English version." + shape;
+    }
+    if (m === "answer") {
+      return "You are a helpful bilingual assistant. Answer the user's input very briefly. zh must be your answer in Simplified Chinese and en the same answer in English." + shape;
+    }
+    return "You are an English-Chinese interpreter. If the input clearly needs an answer, answer it very briefly; otherwise translate it to the other language." + shape;
+  }
+
   function callLLM(userText) {
     var c = cfg();
-    if (!c.key) return freeTranslate(userText);
-    var sys = 'You are an English-Chinese interpreter. If the input is a question that needs an answer, answer it very briefly. Otherwise translate it to the other language. Respond with ONLY a JSON object, no code fences, in this exact shape: {"zh":"Simplified Chinese text (hanzi only, no pinyin, no English)","en":"English text"}';
+    if (!c.key) {
+      if (modeEl.value === "answer") {
+        return Promise.reject(new Error("Answer mode needs an API key."));
+      }
+      return freeTranslate(userText);
+    }
     return fetch(c.endpoint, {
       method: "POST",
       headers: { "Content-Type": "application/json", "Authorization": "Bearer " + c.key },
       body: JSON.stringify({
         model: c.model, temperature: 0.3,
-        messages: [{ role: "system", content: sys }, { role: "user", content: userText }]
+        messages: [{ role: "system", content: systemPrompt() }, { role: "user", content: userText }]
       })
     }).then(function (r) {
       if (!r.ok) throw new Error("LLM " + r.status);
@@ -226,7 +252,6 @@
         var j = JSON.parse(content);
         return { zh: (j.zh || "").trim(), en: (j.en || "").trim() };
       } catch (e) {
-        // Model ignored the format; salvage what we can.
         return { zh: onlyHanzi(content), en: content };
       }
     });
@@ -247,10 +272,15 @@
     });
   }
 
-  function speakReply(reply) {
+  function speakReply(reply, srcWasZh) {
     var lock = lockEl.value;
     var zhSpeak = onlyHanzi(reply.zh); // hanzi only - never speak pinyin
     var chain = Promise.resolve();
+    if (modeEl.value === "translate" && lock === "auto") {
+      // In translate mode, speak only the target language (the one you didn't speak).
+      if (srcWasZh) return chain.then(function () { return speak(reply.en, "en"); });
+      return chain.then(function () { return speak(zhSpeak, "zh"); });
+    }
     if (lock === "zh" || lock === "auto") chain = chain.then(function () { return speak(zhSpeak, "zh"); });
     if (lock === "en" || lock === "auto") chain = chain.then(function () { return speak(reply.en, "en"); });
     return chain;
@@ -261,7 +291,8 @@
     var text = (raw || "").trim();
     if (!text) return;
     if (busy || (synth && synth.speaking)) return;
-    addBubble("you", isZh(text) ? text : "", "", isZh(text) ? "" : text);
+    var srcWasZh = isZh(text);
+    addBubble("you", srcWasZh ? text : "", srcWasZh ? toPinyin(onlyHanzi(text)) : "", srcWasZh ? "" : text);
     if (/\bstop\b/i.test(text) || /停/.test(text)) {
       addBubble("bot", "会话结束。", "huì huà jié shù.", "Session ended.");
       stopSession();
@@ -273,7 +304,7 @@
     callLLM(text).then(function (reply) {
       addBubble("bot", reply.zh, toPinyin(onlyHanzi(reply.zh)), reply.en);
       setStatus("Speaking…");
-      return speakReply(reply);
+      return speakReply(reply, srcWasZh);
     }).then(function () {
       busy = false;
       if (live) { setStatus("Listening…"); resumeCapture(); }
@@ -295,8 +326,8 @@
   var lastVoiceMs = 0;
   var segStartMs = 0;
   var capturePaused = false;
-  var VAD_THRESHOLD = 0.02;   // RMS level counted as speech
-  var SILENCE_MS = 1000;      // pause length that ends a phrase
+  var VAD_THRESHOLD = 0.02;
+  var SILENCE_MS = 1000;
   var MAX_SILENT_SEG_MS = 15000;
 
   function transcriptionEndpoint() {
@@ -372,7 +403,7 @@
     if (segHasSpeech && lastVoiceMs && now - lastVoiceMs > SILENCE_MS) {
       try { recorder.stop(); } catch (e) {}
     } else if (!segHasSpeech && now - segStartMs > MAX_SILENT_SEG_MS) {
-      try { recorder.stop(); } catch (e) {} // recycle long silent segment quietly
+      try { recorder.stop(); } catch (e) {}
     }
   }
 
