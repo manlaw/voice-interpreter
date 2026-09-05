@@ -88,6 +88,10 @@
   #status{font-size:12px;color:var(--muted);text-align:center;margin-top:8px;min-height:15px}
   .small{background:transparent;border:1px solid var(--line);color:var(--muted);
     border-radius:10px;padding:12px;font-size:13px;font-family:inherit}
+  .typedrow{margin-top:8px}
+  .typedrow input{flex:1;min-width:0;padding:11px 12px;border-radius:10px;border:1px solid var(--line);
+    background:var(--panel);color:var(--text);font-size:15px;font-family:inherit}
+  .typedrow input::placeholder{color:var(--muted)}
 
   /* settings */
   #settings{display:none;padding:12px;border-bottom:1px solid var(--line);background:var(--panel)}
@@ -123,8 +127,9 @@
 </div>
 
 <div id="lessonBar">
-  <span class="pos">HSK <b id="pLevel">4</b> · Section <b id="pSection">1</b> · Verb <b id="pVerb">5</b></span>
+  <span class="pos">HSK <b id="pLevel">4</b> · <b id="pSection">1</b>·<b id="pVerb">5</b> <b id="pVerbName"></b></span>
   <span class="grow"></span>
+  <button onclick="showLog()">📜</button>
   <button onclick="nextVerb()">Verb done ✓</button>
 </div>
 
@@ -134,6 +139,10 @@
     <button id="mic" onclick="micTap()">🎤 Tap to speak</button>
     <button id="muteBtn" class="small" onclick="toggleMute()">🔊</button>
     <button class="small" onclick="clearChat()">Clear</button>
+  </div>
+  <div class="row typedrow">
+    <input id="typed" placeholder="Type a message… (stop / start work too)" onkeydown="if(event.key==='Enter')sendTyped()">
+    <button class="small" onclick="sendTyped()">Send</button>
   </div>
   <div id="status"></div>
 </div>
@@ -154,7 +163,7 @@
     <button onclick="toggleSettings()">Hide</button>
   </div>
   <p>Hands-free: tap Start once, then just talk — each pause sends automatically. Say "stop" or 停 to end. Hands-free needs your Groq key.</p>
-  <p>Settings are stored separately from the main app (keys prefixed <b>lab_</b>), so nothing here can affect your real interpreter. With a Groq key the mic is silent (Whisper transcription). Without a key it falls back to the phone's speech recognizer.</p>
+  <p>Settings are stored separately from the main app (keys prefixed <b>lab_</b>), so nothing here can affect your real interpreter. The mic uses silent Whisper transcription and needs your Groq key — it hears English and 中文 automatically.</p>
 </div>
 
 <div id="chat-translate" class="chat" aria-live="polite"></div>
@@ -169,7 +178,7 @@
 var LS = {
   endpoint:"lab_endpoint", model:"lab_model", key:"lab_key",
   mode:"lab_mode", level:"lab_hsk_level", section:"lab_hsk_section", verb:"lab_hsk_verb",
-  micmode:"lab_micmode", live:"lab_live", mute:"lab_mute"
+  micmode:"lab_micmode", live:"lab_live", mute:"lab_mute", srlang:"lab_srlang"
 };
 function get(k,d){ var v=localStorage.getItem(k); return v===null?d:v; }
 function set(k,v){ localStorage.setItem(k,String(v)); }
@@ -193,6 +202,28 @@ var autoStream=null, audioCtx=null, analyser=null, monitor=null;
 var listening=false, utterOn=false, silence=0, utterMs=0;
 var synth = window.speechSynthesis;
 
+/* ---------- pinned curriculum: HSK 4, 10 sections x 10 verbs ---------- */
+var VERBS4=[
+["完成","提供","参加","决定","安排","商量","出发","到达","收拾","打扰"],
+["讨论","解释","反对","支持","拒绝","接受","表扬","批评","鼓励","原谅"],
+["适应","增加","减少","改变","发展","发生","出现","消失","减肥","剩"],
+["引起","造成","影响","保护","保证","管理","负责","遵守","使用","缺少"],
+["邀请","招聘","应聘","报名","联系","通知","预习","复习","毕业","请假"],
+["尝试","坚持","放弃","努力","继续","停止","推迟","取消","计划","修理"],
+["感谢","感动","羡慕","怀疑","后悔","吸引","尊重","信任","表示","估计"],
+["整理","付款","挣","打折","排队","逛","寄","取","存","借"],
+["举办","举行","组织","参观","访问","旅行","出差","迷路","起飞","降落"],
+["阅读","翻译","复印","打印","下载","修改","总结","预订","熟悉","交流"]
+];
+function currentVerbName(){
+  if(lesson.level===4 && VERBS4[lesson.section-1]) return VERBS4[lesson.section-1][lesson.verb-1]||"";
+  return "";
+}
+function coveredVerbs(){
+  if(lesson.level===4 && VERBS4[lesson.section-1]) return VERBS4[lesson.section-1].slice(0,lesson.verb-1);
+  return [];
+}
+
 /* ---------- system prompts ---------- */
 function sysTranslate(){
   return "You are a strict English-Chinese interpreter. Detect the input language and translate to the other language. Never answer questions; translate them. Output EXACTLY these lines and nothing else:\n" +
@@ -204,9 +235,13 @@ function sysAi(){
   "ZH: <hanzi>\nPY: <pinyin with tone marks>\nEN: <English>";
 }
 function sysLesson(){
+  var v=currentVerbName(), cov=coveredVerbs();
+  var posLine = v
+    ? "CURRENT POSITION: HSK Level "+lesson.level+", Section "+lesson.section+", Verb "+lesson.verb+" of 10. The target verb for this slot is 「"+v+"」 — teach exactly this verb, no substitutes. "+(cov.length?"Verbs already covered in this section: "+cov.join("、")+". ":"")+"Introduce 「"+v+"」 with an example sentence and invite the user to make their own sentence with it. Review what they say, chat naturally around it, and mix in related vocabulary as it comes up."
+    : "CURRENT POSITION: HSK Level "+lesson.level+", Section "+lesson.section+", Verb "+lesson.verb+" of 10. Pick a suitable HSK-"+lesson.level+" verb for this slot, introduce it with an example sentence, and invite the user to make their own sentence with it.";
   return sysAi() + "\n\n" + [
 "You are also this user's ongoing Chinese teacher, working through a fixed curriculum: HSK levels 1-9, 10 sections per level, 10 verbs per section.",
-"CURRENT POSITION: HSK Level " + lesson.level + ", Section " + lesson.section + ", Verb " + lesson.verb + " of 10. Verbs 1-4 of this section were 完成, 提供, 参加, 决定. Pick a suitable HSK-" + lesson.level + " verb for the current slot, introduce it with an example sentence, and invite the user to make their own sentence with it. Review what they say, chat naturally around it, and mix in related vocabulary as it comes up.",
+posLine,
 "Stay on the current verb until the user says they're done or asks to move on. Converse naturally like in a normal exchange - just anchored to the curriculum position above."
   ].join("\n");
 }
@@ -232,15 +267,25 @@ function renderLessonBar(){
   $("pLevel").textContent=lesson.level;
   $("pSection").textContent=lesson.section;
   $("pVerb").textContent=lesson.verb;
+  $("pVerbName").textContent=currentVerbName();
 }
+function verbLog(){ try{ return JSON.parse(get("lab_verblog","[]")); }catch(e){ return []; } }
 function nextVerb(){
+  var log=verbLog();
+  log.push({v: currentVerbName()||("HSK"+lesson.level+" S"+lesson.section+" #"+lesson.verb), d: new Date().toISOString().slice(0,10)});
+  set("lab_verblog", JSON.stringify(log));
   lesson.verb++;
   if(lesson.verb>10){ lesson.verb=1; lesson.section++; }
   if(lesson.section>10){ lesson.section=1; lesson.level++; }
   set(LS.verb,lesson.verb); set(LS.section,lesson.section); set(LS.level,lesson.level);
   renderLessonBar();
   histories.lesson=[];
-  sys("Progress saved — now at HSK "+lesson.level+", section "+lesson.section+", verb "+lesson.verb+".");
+  sys("Progress saved — now at HSK "+lesson.level+", section "+lesson.section+", verb "+lesson.verb+(currentVerbName()?" 「"+currentVerbName()+"」":"")+".");
+}
+function showLog(){
+  var log=verbLog();
+  if(!log.length){ sys("No verbs completed yet — tap Verb done ✓ when you finish one."); return; }
+  sys("Verbs reviewed ("+log.length+"): "+log.map(function(e){return e.v+" "+e.d;}).join(" · ")+" — copy this into your Drive sheet anytime.");
 }
 function sys(t,isErr){
   var d=document.createElement("div");
@@ -312,7 +357,8 @@ function micTap(){
   } else {
     if(busy) return;
     if(recording){ stopRec(); return; }
-    if(hasWhisper()){ startRec(); } else { fallbackSR(); }
+    if(hasWhisper()){ startRec(); }
+    else { sys("The mic needs your Groq key — open Settings, paste it, and Save.",true); toggleSettings(); }
   }
 }
 
@@ -348,16 +394,19 @@ function loudness(){
   for(var i=0;i<d.length;i++){ var v=d[i]-128; sum+=v*v; }
   return Math.sqrt(sum/d.length);          // ~0-3 silence, speech usually >6
 }
+var noiseFloor=2.5;   // adapts to the room
 function tick(){
   if(!listening) return;
   if(busy || synth.speaking){ if(utterOn) dropUtterance(); return; }  // don't hear itself
-  var loud = loudness()>6;
+  var rms=loudness();
+  if(!utterOn){ noiseFloor=Math.min(Math.max(noiseFloor*0.95+rms*0.05,1),8); }
+  var loud = rms > noiseFloor+3.5;
   if(!utterOn){
     if(loud) beginUtterance();
   } else {
     utterMs+=100;
     silence = loud ? 0 : silence+100;
-    var pauseNeed = mode==="translate" ? 1000 : 1300;   // snappier in live translation
+    var pauseNeed = mode==="translate" ? 1200 : 1400;   // room to finish the sentence
     if(silence>=pauseNeed && utterMs>600) endUtterance();
     else if(utterMs>30000) endUtterance();             // safety cap
   }
@@ -419,20 +468,17 @@ function transcribe(blob){
     send(text);
   }).catch(function(e){ status(""); sys("Transcription failed: "+e.message,true); });
 }
-function fallbackSR(){
-  var SR=window.SpeechRecognition||window.webkitSpeechRecognition;
-  if(!SR){ sys("No key set and this browser has no speech recognizer. Add your Groq key in Settings.",true); return; }
-  var r=new SR();
-  r.lang="en-US"; r.interimResults=false; r.maxAlternatives=1;
-  recording=true; $("mic").classList.add("rec"); $("mic").textContent="⏹ Listening…"; status("Listening (phone recognizer)…");
-  r.onresult=function(e){ send(e.results[0][0].transcript); };
-  r.onerror=function(e){ sys("Mic error: "+e.error,true); };
-  r.onend=function(){ recording=false; $("mic").classList.remove("rec"); $("mic").textContent="🎤 Tap to speak"; status(""); };
-  r.start();
-}
-
 /* ---------- chat round trip ---------- */
+function sendTyped(){
+  var box=$("typed"), t=box.value.trim();
+  if(!t) return;
+  box.value="";
+  if(/^(stop|停|停止)$/i.test(t)){ if(listening) stopAuto(); else if(recording) stopRec(); else sys("Voice is already off."); return; }
+  if(/^(start|开始)$/i.test(t)){ if(!listening && !recording) micTap(); return; }
+  send(t);
+}
 function send(userText){
+  if(!cfg.key){ sys("The AI needs your Groq key — open Settings, paste it, Save, then try again.",true); return; }
   bubble("you",[{cls:"en",text:userText}]);
   history().push({role:"user",content:userText});
   busy=true; status("Thinking…");
@@ -500,17 +546,14 @@ function speak(zh,en){
 }
 
 /* ---------- boot ---------- */
-window.setMode=setMode; window.nextVerb=nextVerb; window.micTap=micTap;
+window.setMode=setMode; window.nextVerb=nextVerb; window.micTap=micTap; window.showLog=showLog;
 window.toggleSettings=toggleSettings; window.saveSettings=saveSettings; window.clearChat=clearChat;
-window.toggleMicMode=toggleMicMode; window.toggleMute=toggleMute;
+window.toggleMicMode=toggleMicMode; window.toggleMute=toggleMute; window.sendTyped=sendTyped;
 renderLessonBar();
 renderMicMode();
 renderMute();
 updateMicLabel();
 setMode(mode);
-if(get(LS.live,"0")==="1" && micMode==="auto" && hasWhisper()){
-  startAuto();          // live was on last time — resume listening automatically
-}
 if(!cfg.key) sys("Tip: open Settings and add your Groq key for the silent mic and AI/Lesson modes.");
 })();
 </script>
