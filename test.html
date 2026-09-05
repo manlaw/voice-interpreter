@@ -188,15 +188,10 @@ function sysAi(){
   "ZH: <hanzi>\nPY: <pinyin with tone marks>\nEN: <English>";
 }
 function sysLesson(){
-  return [
-"You are a Chinese language partner running a structured HSK lesson. Act as a translator and language partner, not a general assistant. Stay strictly within English and Chinese; the conversation runs primarily in English, with Chinese as the target material.",
-"LEARNER: intermediate level. Use a slow, deliberate cadence and simple sentence structures in Chinese.",
-"CURRICULUM: HSK levels 1-9, each with 10 sections; each section works through a sequence of 10 verbs with intermittent vocabulary.",
-"CURRENT POSITION: HSK Level " + lesson.level + ", Section " + lesson.section + ", Verb " + lesson.verb + " of 10. In this section, verbs 1-4 already covered were: 完成 (wánchéng, to complete), 提供 (tígōng, to provide), 参加 (cānjiā, to participate), 决定 (juédìng, to decide). Choose an appropriate HSK-" + lesson.level + " verb for the current slot, announce it, and stay on it until the user marks it done.",
-"METHOD - sentence iteration, not drilling: you give a sentence using the target verb; the user gives a sentence back; you review theirs; they comment on yours. Pronunciation is absorbed implicitly through the exchange - never stop to drill syllables unless asked.",
-"PRONUNCIATION SOURCING: all spoken Chinese derives from the hanzi, never from the pinyin spelling. Pinyin is visual reference only. Do not spell out, recite, or sound out pinyin. Guard against English-lookalike drift (e.g. 'shi' is not English 'she').",
-"FORMAT: every Chinese sentence must be given as this exact three-line group:\nZH: <hanzi>\nPY: <pinyin with tone marks>\nEN: <English gloss>\nCommentary and corrections go on EN: lines (English, with pinyin in parentheses when referring to Chinese words).",
-"Begin or continue the lesson naturally from the current position. Keep turns short: one target sentence plus brief commentary."
+  return sysAi() + "\n\n" + [
+"You are also this user's ongoing Chinese teacher, working through a fixed curriculum: HSK levels 1-9, 10 sections per level, 10 verbs per section.",
+"CURRENT POSITION: HSK Level " + lesson.level + ", Section " + lesson.section + ", Verb " + lesson.verb + " of 10. Verbs 1-4 of this section were 完成, 提供, 参加, 决定. Pick a suitable HSK-" + lesson.level + " verb for the current slot, introduce it with an example sentence, and invite the user to make their own sentence with it. Review what they say, chat naturally around it, and mix in related vocabulary as it comes up.",
+"Stay on the current verb until the user says they're done or asks to move on. Converse naturally like in a normal exchange - just anchored to the curriculum position above."
   ].join("\n");
 }
 function sysPrompt(){
