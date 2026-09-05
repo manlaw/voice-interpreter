@@ -132,6 +132,7 @@
   <div class="row">
     <button class="small" onclick="toggleSettings()">Set&#8203;tings</button>
     <button id="mic" onclick="micTap()">🎤 Tap to speak</button>
+    <button id="muteBtn" class="small" onclick="toggleMute()">🔊</button>
     <button class="small" onclick="clearChat()">Clear</button>
   </div>
   <div id="status"></div>
@@ -168,7 +169,7 @@
 var LS = {
   endpoint:"lab_endpoint", model:"lab_model", key:"lab_key",
   mode:"lab_mode", level:"lab_hsk_level", section:"lab_hsk_section", verb:"lab_hsk_verb",
-  micmode:"lab_micmode", live:"lab_live"
+  micmode:"lab_micmode", live:"lab_live", mute:"lab_mute"
 };
 function get(k,d){ var v=localStorage.getItem(k); return v===null?d:v; }
 function set(k,v){ localStorage.setItem(k,String(v)); }
@@ -466,8 +467,19 @@ function showReply(text){
   speak(speakZh.join("。"), speakEn.join(" "));
 }
 function stripLatin(s){ return s.replace(/[A-Za-z0-9\u00C0-\u024F\u1E00-\u1EFF()]/g,"").trim(); }
+var muted = get(LS.mute,"0")==="1";
+function toggleMute(){
+  muted=!muted; set(LS.mute, muted?"1":"0");
+  renderMute();
+  if(muted && synth) synth.cancel();          // stop mid-sentence too
+}
+function renderMute(){
+  var b=$("muteBtn");
+  b.textContent = muted ? "🔇" : "🔊";
+  b.style.borderColor = muted ? "var(--seal)" : "var(--line)";
+}
 function speak(zh,en){
-  if(!synth) return;
+  if(!synth || muted) return;
   synth.cancel();
   var q=[];
   if(mode==="translate"){
@@ -490,9 +502,10 @@ function speak(zh,en){
 /* ---------- boot ---------- */
 window.setMode=setMode; window.nextVerb=nextVerb; window.micTap=micTap;
 window.toggleSettings=toggleSettings; window.saveSettings=saveSettings; window.clearChat=clearChat;
-window.toggleMicMode=toggleMicMode;
+window.toggleMicMode=toggleMicMode; window.toggleMute=toggleMute;
 renderLessonBar();
 renderMicMode();
+renderMute();
 updateMicLabel();
 setMode(mode);
 if(get(LS.live,"0")==="1" && micMode==="auto" && hasWhisper()){
